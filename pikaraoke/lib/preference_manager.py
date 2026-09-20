@@ -49,6 +49,7 @@ class PreferenceManager:
         "hide_session_name": False,
         "hide_logo": False,
         "mic_settings": "{}",
+        "scoring_input_device": "",
         "enable_title_tidy": False,
         "enable_folder_browsing": False,
         "metadata_provider": "itunes",

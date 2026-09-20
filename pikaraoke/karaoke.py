@@ -30,6 +30,7 @@ from pikaraoke.lib.karaoke_database import KaraokeDatabase
 from pikaraoke.lib.keep_awake import KeepAwake
 from pikaraoke.lib.library_scanner import LibraryScanner, ScanResult
 from pikaraoke.lib.network import get_ip
+from pikaraoke.lib.performance_recorder import PerformanceRecorder
 from pikaraoke.lib.play_history_manager import PlayHistoryManager
 from pikaraoke.lib.playback_controller import PlaybackController
 from pikaraoke.lib.preference_manager import PreferenceManager
@@ -278,6 +279,14 @@ class Karaoke:
         self.events.on("song_downloaded", self.register_downloaded_song)
         self._relay_to_browser("sync_started")
         self._relay_to_browser("sync_finished")
+
+        # Captures a WAV per performance for scoring, when a capture device is
+        # configured. Subscribes to playback_started/song_ended itself.
+        self.performance_recorder = PerformanceRecorder(
+            preferences=self.preferences,
+            events=self.events,
+            playback_controller=self.playback_controller,
+        )
 
         # Initialize microphone manager for server-side mic passthrough
         self.sound_manager = SoundManager(
