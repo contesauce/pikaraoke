@@ -288,6 +288,7 @@ def test_preference_manager_defaults_exist():
         "hide_session_name",
         "hide_logo",
         "mic_settings",
+        "scoring_input_device",
         "enable_title_tidy",
         "enable_folder_browsing",
         "metadata_provider",
