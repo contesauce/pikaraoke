@@ -69,13 +69,13 @@ async function startScore(staticPath) {
   const scoreTextElement = $("#score-number-text");
   const scoreReviewElement = $("#score-review-text");
 
-  const scoreValue = getScoreValue();
-  const scoreData = getScoreData(scoreValue);
-
   const drums = new Audio(staticPath + "sounds/score-drums.mp3");
-  // Pre-create applause audio NOW to capture the user activation window
-  // Mobile Safari only allows audio.play() within a brief window after user events
-  const applause = new Audio(staticPath + "sounds/" + scoreData.applause);
+  // Pre-create applause audio NOW (empty src) to capture the user activation
+  // window -- Mobile Safari only allows audio.play() within a brief window
+  // after user events, and that permission attaches to the element, not to
+  // whichever file it ends up playing. The real src is set below once the
+  // score is known.
+  const applause = new Audio();
 
   scoreElement.show();
   drums.volume = 0.3;
@@ -83,6 +83,16 @@ async function startScore(staticPath) {
   const drumDuration = 4100;
 
   await rotateScore(scoreTextElement, drumDuration);
+
+  // pendingRealScore (splash.js) arrives, if at all, from a server-side
+  // scorer that starts work the moment the performance ends -- well before
+  // the roll above finishes. Falls back to the random score when nothing
+  // arrived in time, e.g. no scoring device configured for this install.
+  const scoreValue = pendingRealScore !== null ? pendingRealScore : getScoreValue();
+  pendingRealScore = null;
+  const scoreData = getScoreData(scoreValue);
+  applause.src = staticPath + "sounds/" + scoreData.applause;
+
   await showFinalScoreWithAudio(
     scoreTextElement,
     scoreValue,

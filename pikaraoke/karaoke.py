@@ -30,6 +30,7 @@ from pikaraoke.lib.karaoke_database import KaraokeDatabase
 from pikaraoke.lib.keep_awake import KeepAwake
 from pikaraoke.lib.library_scanner import LibraryScanner, ScanResult
 from pikaraoke.lib.network import get_ip
+from pikaraoke.lib.participation_scorer import ParticipationScorer
 from pikaraoke.lib.performance_recorder import PerformanceRecorder
 from pikaraoke.lib.play_history_manager import PlayHistoryManager
 from pikaraoke.lib.playback_controller import PlaybackController
@@ -265,6 +266,7 @@ class Karaoke:
         self._relay_to_browser("queue_update")
         self.events.on("now_playing_update", self.update_now_playing_socket)
         self.events.on("playback_started", self.update_now_playing_socket)
+        self.events.on("performance_scored", self.relay_performance_score)
         # song_ended carries a reason this listener has no use for.
         self.events.on("song_ended", lambda *_: self.update_now_playing_socket())
         # The splash screen carries the session name and is a display that never
@@ -287,6 +289,9 @@ class Karaoke:
             events=self.events,
             playback_controller=self.playback_controller,
         )
+        # Beginner-tier scoring: reads back what PerformanceRecorder just
+        # captured. Subscribes to performance_recorded itself.
+        self.participation_scorer = ParticipationScorer(events=self.events)
 
         # Initialize microphone manager for server-side mic passthrough
         self.sound_manager = SoundManager(
@@ -672,6 +677,17 @@ class Karaoke:
         """Emit now_playing state change via SocketIO."""
         if self.socketio:
             self.socketio.emit("now_playing", self.get_now_playing(), namespace="/")
+
+    def relay_performance_score(self, score: int) -> None:
+        """Forward a computed performance score to the score screen.
+
+        Fired well before the screen needs it -- ParticipationScorer runs as
+        soon as the recording is finalized, during the same song_ended
+        handling that starts the score screen's drum-roll animation, which
+        runs several seconds before a value is actually displayed.
+        """
+        if self.socketio:
+            self.socketio.emit("performance_score", {"score": score}, namespace="/")
 
     def register_downloaded_song(self, song_path: str, youtube_id: str | None) -> None:
         """Add a finished download to the library, then announce it to browsers.
