@@ -136,6 +136,37 @@ class TestRecordingLifecycle:
             assert wf.getframerate() == 48000
             assert wf.getnframes() == 5  # 20 bytes / (2 channels * 2 bytes)
 
+    def test_emits_performance_recorded_with_the_finished_file(
+        self, prefs, events, playback_controller, fake_sd, recordings_dir
+    ):
+        prefs.set("scoring_input_device", "1")
+        PerformanceRecorder(prefs, events, playback_controller)
+        _start_a_song(playback_controller)
+        recorded_paths = []
+        events.on("performance_recorded", lambda path: recorded_paths.append(path))
+
+        events.emit("playback_started")
+        events.emit("song_ended", "complete")
+
+        assert recorded_paths == [str(list(recordings_dir.glob("*.wav"))[0])]
+
+    def test_does_not_emit_performance_recorded_when_discarded(
+        self, prefs, events, playback_controller, fake_sd, recordings_dir
+    ):
+        def _raise(*args, **kwargs):
+            raise _FakePortAudioError("no such device")
+
+        fake_sd.InputStream = _raise
+        prefs.set("scoring_input_device", "1")
+        PerformanceRecorder(prefs, events, playback_controller)
+        _start_a_song(playback_controller)
+        recorded_paths = []
+        events.on("performance_recorded", lambda path: recorded_paths.append(path))
+
+        events.emit("playback_started")
+
+        assert recorded_paths == []
+
     def test_transpose_keeps_recording_into_the_same_file(
         self, prefs, events, playback_controller, fake_sd, recordings_dir
     ):

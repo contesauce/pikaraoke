@@ -11,6 +11,10 @@ let volume = 0.85;
 const playbackStartTimeout = 10000;
 const bgMediaResumeDelay = 2000;
 let isScoreShown = false;
+// Set by the server ahead of the score screen actually needing it (see
+// score.js's startScore) -- null means no real score arrived in time, and
+// the screen falls back to its usual random one.
+let pendingRealScore = null;
 const hasBgVideo = PikaraokeConfig.hasBgVideo;
 let currentVideoUrl = null;
 let hlsInstance = null;
@@ -651,6 +655,7 @@ const setupSocketEvents = () => {
   socket.on("preferences_update", applyPreferenceUpdate);
   socket.on("preferences_reset", applyPreferencesReset);
   socket.on("score_phrases_update", (phrases) => { scoreReviews = phrases; });
+  socket.on("performance_score", (data) => { pendingRealScore = data.score; });
 
   socket.on("playback_position", (position) => {
     if (!isMaster) {

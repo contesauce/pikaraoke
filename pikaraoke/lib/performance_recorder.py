@@ -180,4 +180,6 @@ class PerformanceRecorder:
                     os.remove(self._current_file_path)
                 except OSError:
                     pass
+            elif not discard and self._current_file_path is not None:
+                self._events.emit("performance_recorded", self._current_file_path)
             self._current_file_path = None
