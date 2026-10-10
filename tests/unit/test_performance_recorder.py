@@ -17,7 +17,7 @@ class _FakePortAudioError(Exception):
 
 
 class _FakeInputStream:
-    """Stands in for sd.InputStream, capturing the callback so a test can drive it."""
+    """Stands in for sd.RawInputStream, capturing the callback so a test can drive it."""
 
     instances: list["_FakeInputStream"] = []
 
@@ -49,7 +49,7 @@ def clear_fake_stream_instances():
 def fake_sd(monkeypatch):
     """A minimal fake sounddevice module, wired in as available."""
     fake = MagicMock()
-    fake.InputStream = _FakeInputStream
+    fake.RawInputStream = _FakeInputStream
     fake.PortAudioError = _FakePortAudioError
     fake.query_devices.return_value = [
         {"name": "Speakers", "max_input_channels": 0},
@@ -156,7 +156,7 @@ class TestRecordingLifecycle:
         def _raise(*args, **kwargs):
             raise _FakePortAudioError("no such device")
 
-        fake_sd.InputStream = _raise
+        fake_sd.RawInputStream = _raise
         prefs.set("scoring_input_device", "1")
         PerformanceRecorder(prefs, events, playback_controller)
         _start_a_song(playback_controller)
@@ -200,7 +200,7 @@ class TestRecordingLifecycle:
         def _raise(*args, **kwargs):
             raise _FakePortAudioError("no such device")
 
-        fake_sd.InputStream = _raise
+        fake_sd.RawInputStream = _raise
         prefs.set("scoring_input_device", "1")
         PerformanceRecorder(prefs, events, playback_controller)
         _start_a_song(playback_controller)
