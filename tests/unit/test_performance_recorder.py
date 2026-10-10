@@ -143,7 +143,7 @@ class TestRecordingLifecycle:
         PerformanceRecorder(prefs, events, playback_controller)
         _start_a_song(playback_controller)
         recorded_paths = []
-        events.on("performance_recorded", lambda path: recorded_paths.append(path))
+        events.on("performance_recorded", lambda path, *_args: recorded_paths.append(path))
 
         events.emit("playback_started")
         events.emit("song_ended", "complete")
@@ -161,11 +161,42 @@ class TestRecordingLifecycle:
         PerformanceRecorder(prefs, events, playback_controller)
         _start_a_song(playback_controller)
         recorded_paths = []
-        events.on("performance_recorded", lambda path: recorded_paths.append(path))
+        events.on("performance_recorded", lambda path, *_args: recorded_paths.append(path))
 
         events.emit("playback_started")
 
         assert recorded_paths == []
+
+    def test_finalize_now_records_and_scores_immediately(
+        self, prefs, events, playback_controller, fake_sd, recordings_dir
+    ):
+        prefs.set("scoring_input_device", "1")
+        recorder = PerformanceRecorder(prefs, events, playback_controller)
+        _start_a_song(playback_controller)
+        recorded_paths = []
+        events.on("performance_recorded", lambda path, *_args: recorded_paths.append(path))
+
+        events.emit("playback_started")
+        recorder.finalize_now()
+
+        assert recorded_paths == [str(list(recordings_dir.glob("*.wav"))[0])]
+        assert _FakeInputStream.instances[0].closed is True
+
+    def test_song_ended_after_finalize_now_is_a_no_op(
+        self, prefs, events, playback_controller, fake_sd, recordings_dir
+    ):
+        """end_song still arrives later through the normal path; it must not double-score."""
+        prefs.set("scoring_input_device", "1")
+        recorder = PerformanceRecorder(prefs, events, playback_controller)
+        _start_a_song(playback_controller)
+        recorded_paths = []
+        events.on("performance_recorded", lambda path, *_args: recorded_paths.append(path))
+
+        events.emit("playback_started")
+        recorder.finalize_now()
+        events.emit("song_ended", "complete")
+
+        assert len(recorded_paths) == 1
 
     def test_transpose_keeps_recording_into_the_same_file(
         self, prefs, events, playback_controller, fake_sd, recordings_dir

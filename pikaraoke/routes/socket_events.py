@@ -62,6 +62,19 @@ def setup_socket_events(socketio):
         k = get_karaoke_instance()
         k.playback_controller.end_song(reason)
 
+    @open_to_room("performance_ending")
+    def performance_ending() -> None:
+        """Handle performance_ending WebSocket event.
+
+        Sent by the splash screen the moment a song's video ends, ahead of
+        end_song -- which it deliberately holds back until its own local
+        score animation finishes. Lets PerformanceRecorder finalize and score
+        the performance immediately instead of waiting for that animation to
+        get out of its own way first.
+        """
+        k = get_karaoke_instance()
+        k.performance_recorder.finalize_now()
+
     @open_to_room("start_song")
     def start_song() -> None:
         """Handle start_song WebSocket event when playback begins."""

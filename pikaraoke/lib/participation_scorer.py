@@ -2,10 +2,12 @@
 
 Not pitch, not rhythm -- just whether the mic picked up sustained vocal
 energy through the performance, as a fraction of a 0-99 score to match the
-scale the (currently random) score screen already uses. Deliberately crude:
-this is the tier that works on every performance with no reference data,
+scale the (currently random) score screen already uses. Deliberately crude,
 and later tiers are expected to replace it as the primary number once they
-exist.
+exist. Still needs a reference (the song file that was played, via
+vocal_isolator) to mean anything: the raw capture is mic and backing track
+summed together, so without subtracting the known backing track out first,
+this reads as "was the music loud" rather than "did anyone sing".
 """
 
 import logging
@@ -14,6 +16,7 @@ import wave
 from array import array
 
 from pikaraoke.lib.events import EventSystem
+from pikaraoke.lib.vocal_isolator import isolate_vocals
 
 _WINDOW_MS = 100
 # A window counts as "singing" once it's this many dB above the recording's
@@ -101,21 +104,34 @@ def _percentile(sorted_values: list[float], fraction: float) -> float:
 class ParticipationScorer:
     """Scores a performance's recording as soon as PerformanceRecorder finalizes it.
 
-    Listens for "performance_recorded" (file_path) and emits
-    "performance_scored" (score: int) so Karaoke can relay it to the score
-    screen. Emits nothing when scoring can't say anything meaningful, so the
-    screen falls back to its usual random score rather than showing a
-    misleadingly confident number.
+    Listens for "performance_recorded" (file_path, source_path, transpose)
+    and emits "performance_scored" (score: int) so Karaoke can relay it to
+    the score screen. Emits nothing when scoring can't say anything
+    meaningful, so the screen falls back to its usual random score rather
+    than showing a misleadingly confident number.
+
+    Scores the vocal-isolated residual (recording minus the known backing
+    track) when isolation succeeds, and the raw recording when it doesn't --
+    the raw recording is mic and backing track summed together, so scoring
+    it directly reads as "was the music loud" more than "did anyone sing".
     """
 
     def __init__(self, events: EventSystem) -> None:
         self._events = events
         events.on("performance_recorded", self._on_performance_recorded)
 
-    def _on_performance_recorded(self, file_path: str) -> None:
-        score = score_participation(file_path)
+    def _on_performance_recorded(
+        self, file_path: str, source_path: str | None, transpose: int
+    ) -> None:
+        scoring_path = file_path
+        if source_path is not None:
+            isolated_path = isolate_vocals(file_path, source_path, transpose)
+            if isolated_path is not None:
+                scoring_path = isolated_path
+
+        score = score_participation(scoring_path)
         if score is not None:
-            logging.info(f"Participation score {score} for {file_path}")
+            logging.info(f"Participation score {score} for {file_path} (scored {scoring_path})")
             self._events.emit("performance_scored", score)
         else:
             logging.info(
