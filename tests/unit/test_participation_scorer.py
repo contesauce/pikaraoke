@@ -118,3 +118,27 @@ class TestParticipationScorer:
         events.emit("performance_recorded", str(path))
 
         assert scores == []
+
+    def test_logs_the_computed_score(self, tmp_path, caplog):
+        events = EventSystem()
+        ParticipationScorer(events)
+
+        path = tmp_path / "singing.wav"
+        _write_wav(path, seconds_of_silence=1, seconds_of_tone=9)
+        with caplog.at_level("INFO"):
+            events.emit("performance_recorded", str(path))
+
+        assert "Participation score" in caplog.text
+        assert str(path) in caplog.text
+
+    def test_logs_why_it_could_not_score(self, tmp_path, caplog):
+        events = EventSystem()
+        ParticipationScorer(events)
+
+        path = tmp_path / "totally_silent.wav"
+        _write_wav(path, seconds_of_silence=5, seconds_of_tone=0)
+        with caplog.at_level("INFO"):
+            events.emit("performance_recorded", str(path))
+
+        assert "Could not compute a participation score" in caplog.text
+        assert str(path) in caplog.text
