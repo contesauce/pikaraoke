@@ -102,7 +102,7 @@ class TestParticipationScorer:
 
         path = tmp_path / "singing.wav"
         _write_wav(path, seconds_of_silence=1, seconds_of_tone=9)
-        events.emit("performance_recorded", str(path))
+        events.emit("performance_recorded", str(path), None, 0)
 
         assert len(scores) == 1
         assert scores[0] > 80
@@ -115,7 +115,7 @@ class TestParticipationScorer:
 
         path = tmp_path / "totally_silent.wav"
         _write_wav(path, seconds_of_silence=5, seconds_of_tone=0)
-        events.emit("performance_recorded", str(path))
+        events.emit("performance_recorded", str(path), None, 0)
 
         assert scores == []
 
@@ -126,7 +126,7 @@ class TestParticipationScorer:
         path = tmp_path / "singing.wav"
         _write_wav(path, seconds_of_silence=1, seconds_of_tone=9)
         with caplog.at_level("INFO"):
-            events.emit("performance_recorded", str(path))
+            events.emit("performance_recorded", str(path), None, 0)
 
         assert "Participation score" in caplog.text
         assert str(path) in caplog.text
@@ -138,7 +138,7 @@ class TestParticipationScorer:
         path = tmp_path / "totally_silent.wav"
         _write_wav(path, seconds_of_silence=5, seconds_of_tone=0)
         with caplog.at_level("INFO"):
-            events.emit("performance_recorded", str(path))
+            events.emit("performance_recorded", str(path), None, 0)
 
         assert "Could not compute a participation score" in caplog.text
         assert str(path) in caplog.text

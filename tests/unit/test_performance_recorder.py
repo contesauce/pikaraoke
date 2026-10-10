@@ -143,7 +143,7 @@ class TestRecordingLifecycle:
         PerformanceRecorder(prefs, events, playback_controller)
         _start_a_song(playback_controller)
         recorded_paths = []
-        events.on("performance_recorded", lambda path: recorded_paths.append(path))
+        events.on("performance_recorded", lambda path, *_args: recorded_paths.append(path))
 
         events.emit("playback_started")
         events.emit("song_ended", "complete")
@@ -161,7 +161,7 @@ class TestRecordingLifecycle:
         PerformanceRecorder(prefs, events, playback_controller)
         _start_a_song(playback_controller)
         recorded_paths = []
-        events.on("performance_recorded", lambda path: recorded_paths.append(path))
+        events.on("performance_recorded", lambda path, *_args: recorded_paths.append(path))
 
         events.emit("playback_started")
 
@@ -174,7 +174,7 @@ class TestRecordingLifecycle:
         recorder = PerformanceRecorder(prefs, events, playback_controller)
         _start_a_song(playback_controller)
         recorded_paths = []
-        events.on("performance_recorded", lambda path: recorded_paths.append(path))
+        events.on("performance_recorded", lambda path, *_args: recorded_paths.append(path))
 
         events.emit("playback_started")
         recorder.finalize_now()
@@ -190,7 +190,7 @@ class TestRecordingLifecycle:
         recorder = PerformanceRecorder(prefs, events, playback_controller)
         _start_a_song(playback_controller)
         recorded_paths = []
-        events.on("performance_recorded", lambda path: recorded_paths.append(path))
+        events.on("performance_recorded", lambda path, *_args: recorded_paths.append(path))
 
         events.emit("playback_started")
         recorder.finalize_now()

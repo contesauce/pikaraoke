@@ -95,6 +95,8 @@ class PerformanceRecorder:
         self._stream = None
         self._wave_file: wave.Wave_write | None = None
         self._current_file_path: str | None = None
+        self._current_source_path: str | None = None
+        self._current_transpose: int = 0
 
         events.on("playback_started", self._on_playback_started)
         events.on("song_ended", self._on_song_ended)
@@ -132,6 +134,8 @@ class PerformanceRecorder:
         try:
             self._wave_file = wave.open(file_path, "wb")
             self._current_file_path = file_path
+            self._current_source_path = self._playback_controller.now_playing_filename
+            self._current_transpose = self._playback_controller.now_playing_transpose
             self._wave_file.setnchannels(_CHANNELS)
             self._wave_file.setsampwidth(_SAMPLE_WIDTH_BYTES)
             self._wave_file.setframerate(_SAMPLE_RATE)
@@ -204,5 +208,12 @@ class PerformanceRecorder:
                 except OSError:
                     pass
             elif not discard and self._current_file_path is not None:
-                self._events.emit("performance_recorded", self._current_file_path)
+                self._events.emit(
+                    "performance_recorded",
+                    self._current_file_path,
+                    self._current_source_path,
+                    self._current_transpose,
+                )
             self._current_file_path = None
+            self._current_source_path = None
+            self._current_transpose = 0
