@@ -169,6 +169,23 @@ class PerformanceRecorder:
             return
         self._cleanup(discard=False)
 
+    def finalize_now(self) -> None:
+        """Finalize the in-progress recording immediately.
+
+        For the splash screen's "performance_ending" signal, sent the moment
+        a song's video ends on screen -- well before the client's own local
+        score animation finishes and only then tells the server the song
+        ended (PlaybackController.end_song(), the normal path to
+        _on_song_ended). Scoring a performance only once the animation that
+        is meant to display its score has already finished and moved on
+        defeats the purpose, so this lets it start right away instead.
+
+        _on_song_ended() still fires later through the normal path; _cleanup()
+        is a no-op by then (nothing left to finalize), so that second call
+        costs nothing.
+        """
+        self._cleanup(discard=False)
+
     def _cleanup(self, discard: bool) -> None:
         if self._stream is not None:
             try:
