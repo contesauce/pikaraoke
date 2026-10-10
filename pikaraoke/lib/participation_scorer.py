@@ -115,4 +115,11 @@ class ParticipationScorer:
     def _on_performance_recorded(self, file_path: str) -> None:
         score = score_participation(file_path)
         if score is not None:
+            logging.info(f"Participation score {score} for {file_path}")
             self._events.emit("performance_scored", score)
+        else:
+            logging.info(
+                f"Could not compute a participation score for {file_path} "
+                "(too short, or no contrast between quiet and loud) -- "
+                "score screen will fall back to the random score"
+            )
