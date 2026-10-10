@@ -136,7 +136,13 @@ class PerformanceRecorder:
             self._wave_file.setsampwidth(_SAMPLE_WIDTH_BYTES)
             self._wave_file.setframerate(_SAMPLE_RATE)
 
-            self._stream = sd.InputStream(
+            # RawInputStream, not InputStream: the latter wraps each callback's
+            # data in a numpy array for convenience, which pulls in numpy as an
+            # undeclared runtime dependency the moment a stream actually opens.
+            # The callback below only ever does bytes(indata), so the raw CFFI
+            # buffer a RawInputStream hands back is all it needs -- same
+            # reasoning SoundManager's mic passthrough already uses RawStream for.
+            self._stream = sd.RawInputStream(
                 device=int(device_id),
                 samplerate=_SAMPLE_RATE,
                 channels=_CHANNELS,
