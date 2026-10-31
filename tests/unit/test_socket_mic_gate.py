@@ -31,6 +31,7 @@ ADMIN_EVENTS = [
 # The playback path, which splash screens drive with no admin session.
 PUBLIC_EVENTS = [
     ("end_song", ("complete",)),
+    ("performance_ending", ()),
     ("start_song", ()),
     ("clear_notification", ()),
     ("register_splash", ()),

@@ -291,7 +291,9 @@ class Karaoke:
         )
         # Beginner-tier scoring: reads back what PerformanceRecorder just
         # captured. Subscribes to performance_recorded itself.
-        self.participation_scorer = ParticipationScorer(events=self.events)
+        self.participation_scorer = ParticipationScorer(
+            events=self.events, preferences=self.preferences
+        )
 
         # Initialize microphone manager for server-side mic passthrough
         self.sound_manager = SoundManager(

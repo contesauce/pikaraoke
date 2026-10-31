@@ -110,6 +110,14 @@ const hideVideo = () => {
 const endSong = async (reason = null, showScore = false) => {
   if (showScore && !PikaraokeConfig.disableScore) {
     isScoreShown = true;
+    // end_song (below) is deliberately held back until after this whole
+    // animation finishes, so the server wouldn't otherwise learn the
+    // performance ended -- and so wouldn't finalize or score it -- until
+    // well after the animation is already done waiting on exactly that.
+    // This is the signal that breaks the deadlock.
+    if (isMaster) {
+      socket.emit("performance_ending");
+    }
     await startScore(withBasePath("/static/"));
     isScoreShown = false;
   }

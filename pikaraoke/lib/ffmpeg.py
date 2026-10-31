@@ -11,6 +11,10 @@ import ffmpeg
 
 from pikaraoke.lib.get_platform import is_running_in_docker
 
+# Playback's loudness normalization; participation scoring applies the same
+# filter to its reference so the two match.
+LOUDNORM_OPTIONS = {"i": -16, "tp": -1.5, "lra": 11}
+
 if TYPE_CHECKING:
     from pikaraoke.lib.file_resolver import FileResolver
 
@@ -106,7 +110,7 @@ def build_ffmpeg_cmd(
 
     # Loudness normalization
     if normalize_audio:
-        audio = audio.filter("loudnorm", i=-16, tp=-1.5, lra=11)
+        audio = audio.filter("loudnorm", **LOUDNORM_OPTIONS)
 
     # Video source: CDG input or original video stream
     if is_cdg:

@@ -57,6 +57,35 @@ async function rotateScore(scoreTextElement, duration) {
   }
 }
 
+// How much longer than the drum roll to wait for a real score before giving
+// up on it. The server starts scoring the moment the performance ends, same
+// as the roll below starts, but the two races independently -- scoring has
+// to close and finalize the recording's WAV file and run its own analysis
+// over the whole thing, so it can lose that race on a longer song or a slow
+// disk even though it eventually succeeds. Extending the wait here (rather
+// than just extending the roll itself) keeps the common fast case exactly as
+// snappy as before and only costs time when the real score is actually running
+// late.
+const realScoreGraceMs = 4000;
+
+function waitForRealScore(maxWaitMs) {
+  return new Promise((resolve) => {
+    if (pendingRealScore !== null) {
+      resolve();
+      return;
+    }
+    const pollInterval = 100;
+    let waited = 0;
+    const poll = setInterval(() => {
+      waited += pollInterval;
+      if (pendingRealScore !== null || waited >= maxWaitMs) {
+        clearInterval(poll);
+        resolve();
+      }
+    }, pollInterval);
+  });
+}
+
 async function startScore(staticPath) {
   try {
     const r = await fetch(PikaraokeConfig.scorePhrasesUrl);
@@ -85,9 +114,15 @@ async function startScore(staticPath) {
   await rotateScore(scoreTextElement, drumDuration);
 
   // pendingRealScore (splash.js) arrives, if at all, from a server-side
-  // scorer that starts work the moment the performance ends -- well before
-  // the roll above finishes. Falls back to the random score when nothing
-  // arrived in time, e.g. no scoring device configured for this install.
+  // scorer that starts work the moment the performance ends, racing
+  // independently against the roll above. Most of the time it has already
+  // arrived by now; when it hasn't, give it a bounded grace period rather
+  // than immediately assuming none is coming. Falls back to the random
+  // score only if it still hasn't shown up after that -- e.g. no scoring
+  // device configured for this install.
+  if (pendingRealScore === null) {
+    await waitForRealScore(realScoreGraceMs);
+  }
   const scoreValue = pendingRealScore !== null ? pendingRealScore : getScoreValue();
   pendingRealScore = null;
   const scoreData = getScoreData(scoreValue);
