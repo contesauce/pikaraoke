@@ -337,13 +337,15 @@ class TestParecBackend:
         prefs.set("scoring_input_device", "alsa_input.usb-UF0202")
         PerformanceRecorder(prefs, events, playback_controller)
         _start_a_song(playback_controller)
-        recorded_paths = []
-        events.on("performance_recorded", lambda path, *_args: recorded_paths.append(path))
+        playback_controller.now_playing_filename = "/songs/Rick---dQw4w9WgXcQ.mp4"
+        recorded = []
+        events.on("performance_recorded", lambda *args: recorded.append(args))
 
         events.emit("playback_started")
         events.emit("song_ended", "complete")
 
-        assert recorded_paths == [str(list(recordings_dir.glob("*.wav"))[0])]
+        recording = str(list(recordings_dir.glob("*.wav"))[0])
+        assert recorded == [(recording, "/songs/Rick---dQw4w9WgXcQ.mp4")]
 
     def test_kills_and_discards_when_parec_wont_stop_gracefully(
         self, prefs, events, playback_controller, fake_parec, recordings_dir

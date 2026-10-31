@@ -117,7 +117,6 @@ class PerformanceRecorder:
         self._process: subprocess.Popen | None = None  # parec backend
         self._current_file_path: str | None = None
         self._current_source_path: str | None = None
-        self._current_transpose: int = 0
 
         events.on("playback_started", self._on_playback_started)
         events.on("song_ended", self._on_song_ended)
@@ -150,7 +149,6 @@ class PerformanceRecorder:
         performer = self._playback_controller.now_playing_user or "unknown"
         file_path = os.path.join(_recordings_directory(), _performance_filename(song, performer))
         self._current_source_path = self._playback_controller.now_playing_filename
-        self._current_transpose = self._playback_controller.now_playing_transpose
 
         if _HAS_PAREC:
             self._start_parec(device_id, file_path)
@@ -280,8 +278,6 @@ class PerformanceRecorder:
                     "performance_recorded",
                     self._current_file_path,
                     self._current_source_path,
-                    self._current_transpose,
                 )
             self._current_file_path = None
             self._current_source_path = None
-            self._current_transpose = 0
