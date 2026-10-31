@@ -36,7 +36,9 @@ _VOICE_BAND_FILTER = (
     f"aformat=channel_layouts=mono,aresample={_DECODE_RATE},highpass=f=200,lowpass=f=3500"
 )
 _SLICE_SAMPLES = 160  # 20ms at _DECODE_RATE
+_SLICE_MS = 20
 _SLICES_PER_WINDOW = 5  # scored in 100ms windows
+WINDOW_SECONDS = _SLICE_MS * _SLICES_PER_WINDOW / 1000
 # Stream startup and an avsync setting both offset the recording from the
 # file; the search covers that much either way.
 _MAX_OFFSET_SLICES = 250  # 5s
@@ -71,6 +73,24 @@ def score_participation(recording_path: str, reference_path: str) -> int | None:
     there is nothing meaningful to measure, so the score screen falls back
     to its random score rather than a confident-looking 0.
     """
+    analysis = analyze_performance(recording_path, reference_path)
+    if analysis is None:
+        return None
+    offset_ms, sung = analysis
+    fraction = sum(sung) / len(sung)
+    logging.info(
+        f"Scoring {recording_path}: offset {offset_ms}ms, "
+        f"sung in {fraction:.0%} of {len(sung)} windows"
+    )
+    return round(min(fraction / _FULL_CREDIT_FRACTION, 1.0) * 99)
+
+
+def analyze_performance(recording_path: str, reference_path: str) -> tuple[int, list[bool]] | None:
+    """Return the detected offset in ms and, per 100ms window, whether it was sung.
+
+    None when there is nothing meaningful to measure. Public so the
+    explain_score script can show where the score came from.
+    """
     recording = _slice_powers(recording_path)
     reference = _slice_powers(reference_path)
     if recording is None or reference is None:
@@ -95,15 +115,8 @@ def score_participation(recording_path: str, reference_path: str) -> int | None:
     noise_floor = max(_percentile(residuals, 0.05), 0.0)
 
     margin = 10 ** (_ACTIVE_MARGIN_DB / 10)
-    active = sum(
-        1 for r, m, g in zip(rec_windows, ref_windows, gains) if r > margin * (g * m + noise_floor)
-    )
-    fraction = active / len(rec_windows)
-    logging.info(
-        f"Scoring {recording_path}: offset {offset * 20}ms, "
-        f"sung in {fraction:.0%} of {len(rec_windows)} windows"
-    )
-    return round(min(fraction / _FULL_CREDIT_FRACTION, 1.0) * 99)
+    sung = [r > margin * (g * m + noise_floor) for r, m, g in zip(rec_windows, ref_windows, gains)]
+    return offset * _SLICE_MS, sung
 
 
 def _local_gains(rec_windows: list[float], ref_windows: list[float]) -> list[float] | None:
