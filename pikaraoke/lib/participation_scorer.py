@@ -22,9 +22,11 @@ import subprocess
 from array import array
 from operator import mul
 
-from gevent import spawn
+from gevent import Greenlet, spawn
 
 from pikaraoke.lib.events import EventSystem
+from pikaraoke.lib.ffmpeg import LOUDNORM_OPTIONS
+from pikaraoke.lib.preference_manager import PreferenceManager
 
 _DECODE_RATE = 8000
 # Both signals go through the same band-pass, centered on the voice. Bass
@@ -56,6 +58,7 @@ _GAIN_PERCENTILE = 0.05
 _GAIN_BLOCK_WINDOWS = 25  # 2.5s
 _GAIN_CONTEXT_WINDOWS = 75  # 7.5s either side
 _MIN_GAIN_SAMPLES = 20
+_MUSIC_PRESENT_FRACTION = 0.01  # 20dB under the song's median level
 # A window counts as sung when it is this much louder than music plus room
 # noise alone would make it. Music alone stays within about 0.7dB of that in
 # testing; 2dB credits a voice mixed a little under the music.
@@ -66,47 +69,61 @@ _FULL_CREDIT_FRACTION = 0.4
 _MIN_WINDOWS = 50
 
 
-def score_participation(recording_path: str, reference_path: str) -> int | None:
+def recording_powers(path: str) -> list[float] | None:
+    """Per-20ms band-passed power of a performance recording."""
+    return _slice_powers(path, _VOICE_BAND_FILTER)
+
+
+def reference_powers(path: str, normalize_audio: bool) -> list[float] | None:
+    """Per-20ms band-passed power of the song file, as playback rendered it.
+
+    normalize_audio must match playback's setting: loudnorm boosts quiet
+    passages, and without it on the reference those read as singing. That
+    filter is slow (several seconds a song), which is why ParticipationScorer
+    starts this when the song starts rather than when it ends.
+    """
+    audio_filter = _VOICE_BAND_FILTER
+    if normalize_audio:
+        options = ":".join(f"{key}={value}" for key, value in LOUDNORM_OPTIONS.items())
+        audio_filter = f"loudnorm={options},{audio_filter}"
+    return _slice_powers(path, audio_filter)
+
+
+def score_performance(recording: list[float], reference: list[float], label: str) -> int | None:
     """Score a recording 0-99 by how much of it had vocals over the music.
 
-    reference_path is the song file that was played. Returns None when
-    there is nothing meaningful to measure, so the score screen falls back
-    to its random score rather than a confident-looking 0.
+    Returns None when there is nothing meaningful to measure, so the score
+    screen falls back to its random score rather than a confident-looking 0.
     """
-    analysis = analyze_performance(recording_path, reference_path)
+    analysis = analyze_performance(recording, reference)
     if analysis is None:
+        logging.info(f"Nothing to score in {label} (too short, or silent song)")
         return None
     offset_ms, sung = analysis
     fraction = sum(sung) / len(sung)
     logging.info(
-        f"Scoring {recording_path}: offset {offset_ms}ms, "
-        f"sung in {fraction:.0%} of {len(sung)} windows"
+        f"Scoring {label}: offset {offset_ms}ms, sung in {fraction:.0%} of {len(sung)} windows"
     )
     return round(min(fraction / _FULL_CREDIT_FRACTION, 1.0) * 99)
 
 
-def analyze_performance(recording_path: str, reference_path: str) -> tuple[int, list[bool]] | None:
+def analyze_performance(
+    recording: list[float], reference: list[float]
+) -> tuple[int, list[bool]] | None:
     """Return the detected offset in ms and, per 100ms window, whether it was sung.
 
     None when there is nothing meaningful to measure. Public so the
     explain_score script can show where the score came from.
     """
-    recording = _slice_powers(recording_path)
-    reference = _slice_powers(reference_path)
-    if recording is None or reference is None:
-        return None
-
     offset = _find_offset(recording, reference)
     reference = _shift(reference, offset, len(recording))
     rec_windows = _to_windows(recording)
     ref_windows = _to_windows(reference)
     if len(rec_windows) < _MIN_WINDOWS:
-        logging.info(f"Recording too short to score: {recording_path}")
         return None
 
     gains = _local_gains(rec_windows, ref_windows)
     if gains is None:
-        logging.info(f"Reference has no usable audio for scoring: {reference_path}")
         return None
     # Room noise and mic hiss: what's left of the quietest windows once the
     # music is taken out. Taken from the recording alone, a performance sung
@@ -128,7 +145,12 @@ def _local_gains(rec_windows: list[float], ref_windows: list[float]) -> list[flo
     music_level = _percentile(ref_windows, 0.5)
     if music_level <= 0:
         return None
-    ratios = [r / m if m > music_level else None for r, m in zip(rec_windows, ref_windows)]
+    # Quiet passages count too: playback's loudnorm boosts them relative to
+    # the loud ones, so a gain learned only from loud passages reads every
+    # quiet one as a voice. Only near-silence is left out, where room noise
+    # rather than music sets the ratio.
+    music_present = music_level * _MUSIC_PRESENT_FRACTION
+    ratios = [r / m if m > music_present else None for r, m in zip(rec_windows, ref_windows)]
     song_ratios = [x for x in ratios if x is not None]
     if not song_ratios:
         return None
@@ -149,10 +171,10 @@ def _local_gains(rec_windows: list[float], ref_windows: list[float]) -> list[flo
     return gains[: len(rec_windows)]
 
 
-def _slice_powers(path: str) -> list[float] | None:
-    """Decode path to band-passed mono and return mean power per 20ms slice."""
+def _slice_powers(path: str, audio_filter: str) -> list[float] | None:
+    """Decode path through audio_filter and return mean power per 20ms slice."""
     args = ["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-vn"]
-    args += ["-af", _VOICE_BAND_FILTER, "-f", "s16le", "-"]
+    args += ["-af", audio_filter, "-f", "s16le", "-"]
     try:
         result = subprocess.run(args, capture_output=True, check=True)
     except (subprocess.CalledProcessError, OSError) as e:
@@ -226,19 +248,30 @@ def _percentile(values: list[float], fraction: float) -> float:
 class ParticipationScorer:
     """Scores a performance as soon as PerformanceRecorder finalizes it.
 
-    Listens for "performance_recorded" (file_path, source_path) and emits
-    "performance_scored" (score: int) for Karaoke to relay to the score
-    screen. Emits nothing when no score can be measured, so the screen
-    falls back to its random score.
+    Listens for "performance_started" (source_path) to prepare the song's
+    reference while it plays, and "performance_recorded" (file_path,
+    source_path) to score. Emits "performance_scored" (score: int) for
+    Karaoke to relay to the score screen, or nothing when no score can be
+    measured, so the screen falls back to its random score.
 
-    Scoring runs in its own greenlet: the event arrives inside a socket
-    handler, and the server is a single gevent loop, so scoring inline
-    would stall every page and the score's own delivery until it finished.
+    All work runs in greenlets: the events arrive inside socket handlers,
+    and the server is a single gevent loop, so scoring inline would stall
+    every page and the score's own delivery until it finished.
     """
 
-    def __init__(self, events: EventSystem) -> None:
+    def __init__(self, events: EventSystem, preferences: PreferenceManager) -> None:
         self._events = events
+        self._preferences = preferences
+        self._pending_reference: tuple[str, Greenlet] | None = None
+        events.on("performance_started", self._on_performance_started)
         events.on("performance_recorded", self._on_performance_recorded)
+
+    def _normalize_audio(self) -> bool:
+        return bool(self._preferences.get_or_default("normalize_audio"))
+
+    def _on_performance_started(self, source_path: str) -> None:
+        greenlet = spawn(reference_powers, source_path, self._normalize_audio())
+        self._pending_reference = (source_path, greenlet)
 
     def _on_performance_recorded(self, file_path: str, source_path: str | None) -> None:
         spawn(self.score_recording, file_path, source_path)
@@ -247,7 +280,11 @@ class ParticipationScorer:
         if source_path is None:
             logging.info(f"No song file known for {file_path}; skipping scoring")
             return
-        score = score_participation(file_path, source_path)
+        reference = self._take_reference(source_path)
+        recording = recording_powers(file_path)
+        score = None
+        if reference is not None and recording is not None:
+            score = score_performance(recording, reference, file_path)
         if score is None:
             logging.info(
                 f"Could not compute a participation score for {file_path} -- "
@@ -256,3 +293,10 @@ class ParticipationScorer:
             return
         logging.info(f"Participation score {score} for {file_path}")
         self._events.emit("performance_scored", score)
+
+    def _take_reference(self, source_path: str) -> list[float] | None:
+        """The reference prepared during the song, or one computed now if none was."""
+        pending, self._pending_reference = self._pending_reference, None
+        if pending is not None and pending[0] == source_path:
+            return pending[1].get()
+        return reference_powers(source_path, self._normalize_audio())

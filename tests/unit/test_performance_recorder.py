@@ -347,6 +347,22 @@ class TestParecBackend:
         recording = str(list(recordings_dir.glob("*.wav"))[0])
         assert recorded == [(recording, "/songs/Rick---dQw4w9WgXcQ.mp4")]
 
+    def test_announces_the_song_file_when_recording_starts(
+        self, prefs, events, playback_controller, fake_parec, recordings_dir
+    ):
+        prefs.set("scoring_input_device", "alsa_input.usb-UF0202")
+        PerformanceRecorder(prefs, events, playback_controller)
+        _start_a_song(playback_controller)
+        playback_controller.now_playing_filename = "/songs/Rick---dQw4w9WgXcQ.mp4"
+        started = []
+        events.on("performance_started", started.append)
+
+        events.emit("playback_started")
+        events.emit("song_ended", "transpose")
+        events.emit("playback_started")
+
+        assert started == ["/songs/Rick---dQw4w9WgXcQ.mp4"]
+
     def test_kills_and_discards_when_parec_wont_stop_gracefully(
         self, prefs, events, playback_controller, fake_parec, recordings_dir
     ):

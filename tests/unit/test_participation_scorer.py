@@ -5,11 +5,13 @@ import subprocess
 from array import array
 from unittest.mock import patch
 
+import gevent
 import pytest
 
 from pikaraoke.lib import participation_scorer as ps
 from pikaraoke.lib.events import EventSystem
-from pikaraoke.lib.participation_scorer import ParticipationScorer, score_participation
+from pikaraoke.lib.participation_scorer import ParticipationScorer, score_performance
+from pikaraoke.lib.preference_manager import PreferenceManager
 
 _SECONDS = 120
 _SLICES = _SECONDS * 50  # 20ms slices
@@ -42,11 +44,7 @@ def _recording(music, gain=0.5, delay=0, sung_fraction=0.0, vocal_power=4e6, see
 
 
 def _score(recording, reference):
-    def fake_slice_powers(path):
-        return {"rec.wav": recording, "song.mp4": reference}[path]
-
-    with patch.object(ps, "_slice_powers", side_effect=fake_slice_powers):
-        return score_participation("rec.wav", "song.mp4")
+    return score_performance(recording, reference, "rec.wav")
 
 
 class TestScoreParticipation:
@@ -82,12 +80,6 @@ class TestScoreParticipation:
 
         assert score is not None
         assert score < 15
-
-    def test_returns_none_when_a_decode_fails(self):
-        music = _music_envelope()
-
-        assert _score(None, music) is None
-        assert _score(_recording(music), None) is None
 
     def test_returns_none_for_too_short_a_recording(self):
         music = _music_envelope()[:100]
@@ -157,61 +149,119 @@ class TestSlicePowers:
         completed = subprocess.CompletedProcess([], 0, stdout=samples.tobytes(), stderr=b"")
 
         with patch.object(ps.subprocess, "run", return_value=completed) as run:
-            powers = ps._slice_powers("song.mp4")
+            powers = ps._slice_powers("song.mp4", "highpass=f=200")
 
         assert powers == [10000.0, 40000.0]
-        assert "song.mp4" in run.call_args.args[0]
+        args = run.call_args.args[0]
+        assert "song.mp4" in args
+        assert args[args.index("-af") + 1] == "highpass=f=200"
 
     def test_returns_none_when_ffmpeg_fails(self):
         error = subprocess.CalledProcessError(1, "ffmpeg", stderr=b"Invalid data")
 
         with patch.object(ps.subprocess, "run", side_effect=error):
-            assert ps._slice_powers("song.zip") is None
+            assert ps._slice_powers("song.zip", "highpass=f=200") is None
+
+
+class TestReferencePowers:
+    def test_applies_loudnorm_only_when_playback_did(self):
+        with patch.object(ps, "_slice_powers", return_value=[1.0]) as slice_powers:
+            ps.reference_powers("song.mp4", normalize_audio=True)
+            ps.reference_powers("song.mp4", normalize_audio=False)
+
+        normalized, plain = (c.args[1] for c in slice_powers.call_args_list)
+        assert normalized.startswith("loudnorm=i=-16:tp=-1.5:lra=11,")
+        assert "loudnorm" not in plain
 
 
 class TestParticipationScorer:
     @pytest.fixture
-    def scorer(self):
-        events = EventSystem()
-        return ParticipationScorer(events), events
+    def preferences(self, tmp_path):
+        return PreferenceManager(str(tmp_path / "config.ini"))
 
-    def test_scores_in_a_greenlet_off_the_event_handler(self, scorer):
-        scorer_obj, events = scorer
+    @pytest.fixture
+    def events(self):
+        return EventSystem()
 
+    @pytest.fixture
+    def scorer(self, events, preferences):
+        return ParticipationScorer(events, preferences)
+
+    def test_scores_in_a_greenlet_off_the_event_handler(self, scorer, events):
         with patch.object(ps, "spawn") as spawn:
             events.emit("performance_recorded", "rec.wav", "song.mp4")
 
-        spawn.assert_called_once_with(scorer_obj.score_recording, "rec.wav", "song.mp4")
+        spawn.assert_called_once_with(scorer.score_recording, "rec.wav", "song.mp4")
 
-    def test_emits_the_score(self, scorer):
-        scorer_obj, events = scorer
+    def test_prepares_the_reference_when_the_song_starts(self, scorer, events, preferences):
+        preferences.set("normalize_audio", True)
+
+        with patch.object(ps, "spawn") as spawn:
+            events.emit("performance_started", "song.mp4")
+
+        spawn.assert_called_once_with(ps.reference_powers, "song.mp4", True)
+
+    def test_scores_against_the_prepared_reference(self, scorer, events):
+        with patch.object(ps, "reference_powers", return_value=[2.0]) as reference:
+            events.emit("performance_started", "song.mp4")
+            gevent.sleep(0)
+        with (
+            patch.object(ps, "reference_powers") as late_reference,
+            patch.object(ps, "recording_powers", return_value=[1.0]),
+            patch.object(ps, "score_performance", return_value=72) as score,
+        ):
+            scorer.score_recording("rec.wav", "song.mp4")
+
+        reference.assert_called_once()
+        late_reference.assert_not_called()
+        assert score.call_args.args[:2] == ([1.0], [2.0])
+
+    def test_computes_the_reference_late_for_a_different_song(self, scorer, events, preferences):
+        with patch.object(ps, "reference_powers", return_value=[2.0]):
+            events.emit("performance_started", "other.mp4")
+            gevent.sleep(0)
+        with (
+            patch.object(ps, "reference_powers", return_value=[3.0]) as late_reference,
+            patch.object(ps, "recording_powers", return_value=[1.0]),
+            patch.object(ps, "score_performance", return_value=72),
+        ):
+            scorer.score_recording("rec.wav", "song.mp4")
+
+        late_reference.assert_called_once_with("song.mp4", False)
+
+    def test_emits_the_score(self, scorer, events):
         scores = []
         events.on("performance_scored", scores.append)
 
-        with patch.object(ps, "score_participation", return_value=72):
-            scorer_obj.score_recording("rec.wav", "song.mp4")
+        with (
+            patch.object(ps, "reference_powers", return_value=[2.0]),
+            patch.object(ps, "recording_powers", return_value=[1.0]),
+            patch.object(ps, "score_performance", return_value=72),
+        ):
+            scorer.score_recording("rec.wav", "song.mp4")
 
         assert scores == [72]
 
-    def test_stays_silent_and_logs_when_unscorable(self, scorer, caplog):
-        scorer_obj, events = scorer
+    def test_stays_silent_and_logs_when_a_decode_fails(self, scorer, events, caplog):
         scores = []
         events.on("performance_scored", scores.append)
 
-        with patch.object(ps, "score_participation", return_value=None):
-            with caplog.at_level("INFO"):
-                scorer_obj.score_recording("rec.wav", "song.mp4")
+        with (
+            patch.object(ps, "reference_powers", return_value=None),
+            patch.object(ps, "recording_powers", return_value=[1.0]),
+            caplog.at_level("INFO"),
+        ):
+            scorer.score_recording("rec.wav", "song.mp4")
 
         assert scores == []
         assert "Could not compute a participation score" in caplog.text
 
-    def test_skips_when_the_song_file_is_unknown(self, scorer):
-        scorer_obj, events = scorer
+    def test_skips_when_the_song_file_is_unknown(self, scorer, events):
         scores = []
         events.on("performance_scored", scores.append)
 
-        with patch.object(ps, "score_participation") as score:
-            scorer_obj.score_recording("rec.wav", None)
+        with patch.object(ps, "recording_powers") as recording:
+            scorer.score_recording("rec.wav", None)
 
-        score.assert_not_called()
+        recording.assert_not_called()
         assert scores == []

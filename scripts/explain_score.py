@@ -5,7 +5,9 @@ that counted as sung, so you can listen to the WAV at those times and hear
 whether it was a singer, the room, or music leaking through the mics.
 
 Usage:
-    uv run python scripts/explain_score.py RECORDING.wav SONG_FILE
+    uv run python scripts/explain_score.py RECORDING.wav SONG_FILE [--normalized]
+
+Pass --normalized when "Normalize audio volume" was on for that song.
 """
 
 import argparse
@@ -18,7 +20,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pikaraoke.lib.participation_scorer import (
     WINDOW_SECONDS,
     analyze_performance,
-    score_participation,
+    recording_powers,
+    reference_powers,
+    score_performance,
 )
 
 # Stretches shorter than this are listed only in the totals, not one by one.
@@ -46,9 +50,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("recording", help="WAV from ~/.pikaraoke/recordings")
     parser.add_argument("song", help="the song file that was played")
+    parser.add_argument("--normalized", action="store_true", help='"Normalize audio volume" was on')
     args = parser.parse_args()
 
-    analysis = analyze_performance(args.recording, args.song)
+    recording = recording_powers(args.recording)
+    reference = reference_powers(args.song, args.normalized)
+    if recording is None or reference is None:
+        print("Could not decode (see warnings above).")
+        return
+    analysis = analyze_performance(recording, reference)
     if analysis is None:
         print("Could not analyze (see warnings above).")
         return
@@ -58,7 +68,7 @@ def main() -> None:
 
     print(f"Offset: {offset_ms}ms")
     print(f"Sung: {sum(sung) / len(sung):.0%} of {len(sung) * WINDOW_SECONDS:.0f}s")
-    print(f"Score: {score_participation(args.recording, args.song)}")
+    print(f"Score: {score_performance(recording, reference, args.recording)}")
     print(
         f"{len(spans)} sung stretches, {len(spans) - len(listed)} shorter than "
         f"{_MIN_LISTED_SECONDS}s. Longer ones:"

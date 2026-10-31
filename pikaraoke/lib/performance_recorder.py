@@ -93,7 +93,9 @@ def list_input_devices() -> list[dict]:
 class PerformanceRecorder:
     """Captures one WAV file per performance from a chosen input device.
 
-    Starts on "playback_started", stops and finalizes on "song_ended". Reads
+    Starts on "playback_started", stops and finalizes on "song_ended". Emits
+    "performance_started" (source_path) once recording is under way and
+    "performance_recorded" (file_path, source_path) once the WAV is final. Reads
     the song/performer directly off PlaybackController rather than off the
     event, which carries no payload -- other listeners of the same events
     (e.g. Karaoke.update_now_playing_socket) already read state this way
@@ -154,6 +156,8 @@ class PerformanceRecorder:
             self._start_parec(device_id, file_path)
         else:
             self._start_sounddevice(device_id, file_path)
+        if self._is_recording() and self._current_source_path is not None:
+            self._events.emit("performance_started", self._current_source_path)
 
     def _start_sounddevice(self, device_id: str, file_path: str) -> None:
         try:
