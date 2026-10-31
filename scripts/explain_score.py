@@ -76,17 +76,18 @@ def _clock(seconds: float) -> str:
     return f"{int(seconds // 60)}:{seconds % 60:04.1f}"
 
 
-def explain(recording: list[float], reference: list[float], label: str) -> None:
+def explain(recording: list[float], reference: dict[str, list[float]], label: str) -> None:
     analysis = analyze_performance(recording, reference)
     if analysis is None:
         print(f"{label}: nothing to analyze")
         return
-    offset_ms, sung = analysis
+    channel, offset_ms, sung = analysis
     score = score_performance(recording, reference, label)
     spans = sung_spans(sung)
     listed = [(a, b) for a, b in spans if b - a >= _MIN_LISTED_SECONDS]
     print(f"\n{label}")
-    print(f"  Offset {offset_ms}ms, sung {sum(sung) / len(sung):.0%}, score {score}")
+    print(f"  Matched the song's {channel} channel(s), offset {offset_ms}ms")
+    print(f"  Sung {sum(sung) / len(sung):.0%}, score {score}")
     print(f"  {len(spans)} sung stretches, {len(listed)} of them {_MIN_LISTED_SECONDS}s or longer:")
     for start, end in listed[:15]:
         print(f"    {_clock(start)} - {_clock(end)}  ({end - start:.1f}s)")

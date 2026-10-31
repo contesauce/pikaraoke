@@ -34,8 +34,20 @@ _DECODE_RATE = 8000
 # so cutting them makes vocals a larger share of what is compared. Downmixed
 # and resampled first, since filtering at 8kHz is several times cheaper than
 # at the capture's 48kHz.
-_VOICE_BAND_FILTER = (
-    f"aformat=channel_layouts=mono,aresample={_DECODE_RATE},highpass=f=200,lowpass=f=3500"
+_VOICE_BAND = f"aresample={_DECODE_RATE},highpass=f=200,lowpass=f=3500"
+_RECORDING_FILTER = f"aformat=channel_layouts=mono,{_VOICE_BAND}"
+# Which channels of the song reach the mixer depends on the cable: a stereo
+# plug in a mono input carries only the left channel, and in a balanced input
+# left minus right. Sounds panned to one side are then louder or quieter in
+# the recording than in a both-channel reference, on every hit -- reading as
+# singing once a bar. The reference is decoded all four ways in one pass and
+# the one whose envelope best matches the recording is used. Mono files are
+# upmixed first, leaving their "difference" channel silent and never chosen.
+REFERENCE_CHANNELS = ("both", "left", "right", "difference")
+_REFERENCE_FILTER = (
+    "aformat=channel_layouts=stereo,"
+    "pan=4c|c0=0.5*c0+0.5*c1|c1=c0|c2=c1|c3=0.5*c0-0.5*c1,"
+    f"{_VOICE_BAND}"
 )
 _SLICE_SAMPLES = 160  # 20ms at _DECODE_RATE
 _SLICE_MS = 20
@@ -52,9 +64,7 @@ _ALIGNMENT_SLICES = 3000  # first 60s is plenty to lock the offset
 # power, so the low tail is where the music-alone ratio lives.
 _GAIN_PERCENTILE = 0.05
 # The gain is re-estimated per block from the windows around it rather than
-# once per song: playback's loudnorm option and a hand on the mixer's music
-# fader both change it mid-song. Applying loudnorm to the reference instead
-# would match playback exactly but takes longer than the score screen waits.
+# once per song: a hand on the mixer's music fader changes it mid-song.
 _GAIN_BLOCK_WINDOWS = 25  # 2.5s
 _GAIN_CONTEXT_WINDOWS = 75  # 7.5s either side
 _MIN_GAIN_SAMPLES = 20
@@ -71,52 +81,63 @@ _MIN_WINDOWS = 50
 
 def recording_powers(path: str) -> list[float] | None:
     """Per-20ms band-passed power of a performance recording."""
-    return _slice_powers(path, _VOICE_BAND_FILTER)
+    channels = _slice_powers(path, _RECORDING_FILTER, 1)
+    return channels[0] if channels else None
 
 
-def reference_powers(path: str, normalize_audio: bool) -> list[float] | None:
-    """Per-20ms band-passed power of the song file, as playback rendered it.
+def reference_powers(path: str, normalize_audio: bool) -> dict[str, list[float]] | None:
+    """Per-20ms band-passed power of the song file as playback rendered it,
+    for each of REFERENCE_CHANNELS.
 
     normalize_audio must match playback's setting: loudnorm boosts quiet
     passages, and without it on the reference those read as singing. That
     filter is slow (several seconds a song), which is why ParticipationScorer
     starts this when the song starts rather than when it ends.
     """
-    audio_filter = _VOICE_BAND_FILTER
+    audio_filter = _REFERENCE_FILTER
     if normalize_audio:
         options = ":".join(f"{key}={value}" for key, value in LOUDNORM_OPTIONS.items())
         audio_filter = f"loudnorm={options},{audio_filter}"
-    return _slice_powers(path, audio_filter)
+    channels = _slice_powers(path, audio_filter, len(REFERENCE_CHANNELS))
+    return dict(zip(REFERENCE_CHANNELS, channels)) if channels else None
 
 
-def score_performance(recording: list[float], reference: list[float], label: str) -> int | None:
+def score_performance(
+    recording: list[float], references: dict[str, list[float]], label: str
+) -> int | None:
     """Score a recording 0-99 by how much of it had vocals over the music.
 
     Returns None when there is nothing meaningful to measure, so the score
     screen falls back to its random score rather than a confident-looking 0.
     """
-    analysis = analyze_performance(recording, reference)
+    analysis = analyze_performance(recording, references)
     if analysis is None:
         logging.info(f"Nothing to score in {label} (too short, or silent song)")
         return None
-    offset_ms, sung = analysis
+    channel, offset_ms, sung = analysis
     fraction = sum(sung) / len(sung)
     logging.info(
-        f"Scoring {label}: offset {offset_ms}ms, sung in {fraction:.0%} of {len(sung)} windows"
+        f"Scoring {label}: {channel} channel(s), offset {offset_ms}ms, "
+        f"sung in {fraction:.0%} of {len(sung)} windows"
     )
     return round(min(fraction / _FULL_CREDIT_FRACTION, 1.0) * 99)
 
 
 def analyze_performance(
-    recording: list[float], reference: list[float]
-) -> tuple[int, list[bool]] | None:
-    """Return the detected offset in ms and, per 100ms window, whether it was sung.
+    recording: list[float], references: dict[str, list[float]]
+) -> tuple[str, int, list[bool]] | None:
+    """Return the matched reference channel, the offset in ms, and per 100ms
+    window whether it was sung.
 
     None when there is nothing meaningful to measure. Public so the
     explain_score script can show where the score came from.
     """
-    offset = _find_offset(recording, reference)
-    reference = _shift(reference, offset, len(recording))
+    matches = {name: _find_offset(recording, ref) for name, ref in references.items()}
+    channel = max(matches, key=lambda name: matches[name][1])
+    offset, correlation = matches[channel]
+    if correlation == -math.inf:
+        return None
+    reference = _shift(references[channel], offset, len(recording))
     rec_windows = _to_windows(recording)
     ref_windows = _to_windows(reference)
     if len(rec_windows) < _MIN_WINDOWS:
@@ -133,7 +154,7 @@ def analyze_performance(
 
     margin = 10 ** (_ACTIVE_MARGIN_DB / 10)
     sung = [r > margin * (g * m + noise_floor) for r, m, g in zip(rec_windows, ref_windows, gains)]
-    return offset * _SLICE_MS, sung
+    return channel, offset * _SLICE_MS, sung
 
 
 def _local_gains(rec_windows: list[float], ref_windows: list[float]) -> list[float] | None:
@@ -171,8 +192,10 @@ def _local_gains(rec_windows: list[float], ref_windows: list[float]) -> list[flo
     return gains[: len(rec_windows)]
 
 
-def _slice_powers(path: str, audio_filter: str) -> list[float] | None:
-    """Decode path through audio_filter and return mean power per 20ms slice."""
+def _slice_powers(path: str, audio_filter: str, channels: int) -> list[list[float]] | None:
+    """Decode path through audio_filter and return, per output channel, the
+    mean power of each 20ms slice.
+    """
     args = ["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-vn"]
     args += ["-af", audio_filter, "-f", "s16le", "-"]
     try:
@@ -182,8 +205,13 @@ def _slice_powers(path: str, audio_filter: str) -> list[float] | None:
         logging.warning(f"Could not decode {path} for scoring: {e} {stderr.decode()[-300:]}")
         return None
 
+    frame_bytes = 2 * channels
     samples = array("h")
-    samples.frombytes(result.stdout[: len(result.stdout) - len(result.stdout) % 2])
+    samples.frombytes(result.stdout[: len(result.stdout) - len(result.stdout) % frame_bytes])
+    return [_powers(samples[channel::channels]) for channel in range(channels)]
+
+
+def _powers(samples: array) -> list[float]:
     return [
         sum(map(mul, chunk, chunk)) / _SLICE_SAMPLES
         for chunk in (
@@ -193,8 +221,9 @@ def _slice_powers(path: str, audio_filter: str) -> list[float] | None:
     ]
 
 
-def _find_offset(recording: list[float], reference: list[float]) -> int:
-    """Return how many slices later the music sits in the recording than in the file.
+def _find_offset(recording: list[float], reference: list[float]) -> tuple[int, float]:
+    """Return how many slices later the music sits in the recording than in
+    the file, and how well the envelopes correlate there.
 
     Correlates log-loudness envelopes, which follow the song's structure
     (verses, drops, stops) regardless of the gain between the two signals.
@@ -214,7 +243,7 @@ def _find_offset(recording: list[float], reference: list[float]) -> int:
         score = _pearson(rec_part[:length], ref_part[:length])
         if score > best_score:
             best_offset, best_score = offset, score
-    return best_offset
+    return best_offset, best_score
 
 
 def _pearson(a: list[float], b: list[float]) -> float:
@@ -294,7 +323,7 @@ class ParticipationScorer:
         logging.info(f"Participation score {score} for {file_path}")
         self._events.emit("performance_scored", score)
 
-    def _take_reference(self, source_path: str) -> list[float] | None:
+    def _take_reference(self, source_path: str) -> dict[str, list[float]] | None:
         """The reference prepared during the song, or one computed now if none was."""
         pending, self._pending_reference = self._pending_reference, None
         if pending is not None and pending[0] == source_path:

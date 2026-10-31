@@ -44,7 +44,7 @@ def _recording(music, gain=0.5, delay=0, sung_fraction=0.0, vocal_power=4e6, see
 
 
 def _score(recording, reference):
-    return score_performance(recording, reference, "rec.wav")
+    return score_performance(recording, {"both": reference}, "rec.wav")
 
 
 class TestScoreParticipation:
@@ -140,18 +140,20 @@ class TestFindOffset:
         else:
             recording = music[-delay:]
 
-        assert ps._find_offset(recording, music) == delay
+        assert ps._find_offset(recording, music)[0] == delay
 
 
 class TestSlicePowers:
-    def test_returns_mean_power_per_slice(self):
-        samples = array("h", [100] * 160 + [-200] * 160 + [7] * 10)
-        completed = subprocess.CompletedProcess([], 0, stdout=samples.tobytes(), stderr=b"")
+    def test_returns_mean_power_per_slice_for_each_channel(self):
+        left = [100] * 160 + [-200] * 160 + [7] * 10
+        right = [10] * 330
+        interleaved = array("h", (v for pair in zip(left, right) for v in pair))
+        completed = subprocess.CompletedProcess([], 0, stdout=interleaved.tobytes(), stderr=b"")
 
         with patch.object(ps.subprocess, "run", return_value=completed) as run:
-            powers = ps._slice_powers("song.mp4", "highpass=f=200")
+            powers = ps._slice_powers("song.mp4", "highpass=f=200", channels=2)
 
-        assert powers == [10000.0, 40000.0]
+        assert powers == [[10000.0, 40000.0], [100.0, 100.0]]
         args = run.call_args.args[0]
         assert "song.mp4" in args
         assert args[args.index("-af") + 1] == "highpass=f=200"
@@ -160,18 +162,49 @@ class TestSlicePowers:
         error = subprocess.CalledProcessError(1, "ffmpeg", stderr=b"Invalid data")
 
         with patch.object(ps.subprocess, "run", side_effect=error):
-            assert ps._slice_powers("song.zip", "highpass=f=200") is None
+            assert ps._slice_powers("song.zip", "highpass=f=200", channels=1) is None
+
+
+class TestChannelMatching:
+    def test_picks_the_channel_the_mixer_received(self):
+        """A stereo plug in a mono input: only the left channel reaches the mixer.
+
+        A beat panned hard left is then louder in the recording than in a
+        both-channel reference on every hit, which must not read as singing.
+        """
+        music = _music_envelope()
+        beat = [8e6 if i % 112 < 10 else 0.0 for i in range(_SLICES)]  # once a bar
+        references = {
+            "both": [m + b / 4 for m, b in zip(music, beat)],
+            "left": [m + b for m, b in zip(music, beat)],
+            "right": music,
+        }
+        recording = _recording(references["left"])
+
+        channel, _offset, sung = ps.analyze_performance(recording, references)
+        both_only = _score(recording, references["both"])
+
+        assert channel == "left"
+        assert sum(sung) / len(sung) < 0.05
+        assert both_only > 20
 
 
 class TestReferencePowers:
     def test_applies_loudnorm_only_when_playback_did(self):
-        with patch.object(ps, "_slice_powers", return_value=[1.0]) as slice_powers:
+        with patch.object(ps, "_slice_powers", return_value=[[1.0]] * 4) as slice_powers:
             ps.reference_powers("song.mp4", normalize_audio=True)
             ps.reference_powers("song.mp4", normalize_audio=False)
 
         normalized, plain = (c.args[1] for c in slice_powers.call_args_list)
         assert normalized.startswith("loudnorm=i=-16:tp=-1.5:lra=11,")
         assert "loudnorm" not in plain
+
+    def test_returns_each_channel_by_name(self):
+        channels = [[1.0], [2.0], [3.0], [4.0]]
+        with patch.object(ps, "_slice_powers", return_value=channels):
+            references = ps.reference_powers("song.mp4", normalize_audio=False)
+
+        assert references == {"both": [1.0], "left": [2.0], "right": [3.0], "difference": [4.0]}
 
 
 class TestParticipationScorer:
@@ -202,7 +235,7 @@ class TestParticipationScorer:
         spawn.assert_called_once_with(ps.reference_powers, "song.mp4", True)
 
     def test_scores_against_the_prepared_reference(self, scorer, events):
-        with patch.object(ps, "reference_powers", return_value=[2.0]) as reference:
+        with patch.object(ps, "reference_powers", return_value={"both": [2.0]}) as reference:
             events.emit("performance_started", "song.mp4")
             gevent.sleep(0)
         with (
@@ -214,14 +247,14 @@ class TestParticipationScorer:
 
         reference.assert_called_once()
         late_reference.assert_not_called()
-        assert score.call_args.args[:2] == ([1.0], [2.0])
+        assert score.call_args.args[:2] == ([1.0], {"both": [2.0]})
 
     def test_computes_the_reference_late_for_a_different_song(self, scorer, events, preferences):
-        with patch.object(ps, "reference_powers", return_value=[2.0]):
+        with patch.object(ps, "reference_powers", return_value={"both": [2.0]}):
             events.emit("performance_started", "other.mp4")
             gevent.sleep(0)
         with (
-            patch.object(ps, "reference_powers", return_value=[3.0]) as late_reference,
+            patch.object(ps, "reference_powers", return_value={"both": [3.0]}) as late_reference,
             patch.object(ps, "recording_powers", return_value=[1.0]),
             patch.object(ps, "score_performance", return_value=72),
         ):
@@ -234,7 +267,7 @@ class TestParticipationScorer:
         events.on("performance_scored", scores.append)
 
         with (
-            patch.object(ps, "reference_powers", return_value=[2.0]),
+            patch.object(ps, "reference_powers", return_value={"both": [2.0]}),
             patch.object(ps, "recording_powers", return_value=[1.0]),
             patch.object(ps, "score_performance", return_value=72),
         ):
