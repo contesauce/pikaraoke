@@ -130,6 +130,29 @@ class TestScoreParticipation:
         assert score is not None
         assert score > 40
 
+    def test_real_world_level_wobble_alone_is_not_singing(self):
+        """On real hardware the music's level in the recording wobbles about
+        +-1.5dB around the song file's from window to window."""
+        music = _music_envelope()
+        rng = random.Random(3)
+        wobbly = [p * 10 ** (rng.gauss(0, 1.0) / 10) for p in _recording(music)]
+
+        score = _score(wobbly, music)
+
+        assert score is not None
+        assert score < 15
+
+    def test_background_music_fading_out_at_the_start_is_not_singing(self):
+        music = _music_envelope()
+        recording = _recording(music)
+        for i in range(350):  # 7s of the splash screen's music on top
+            recording[i] += 3e6
+
+        score = _score(recording, music)
+
+        assert score is not None
+        assert score < 5
+
 
 class TestFindOffset:
     @pytest.mark.parametrize("delay", [0, 12, 200, -40])

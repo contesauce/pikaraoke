@@ -57,26 +57,38 @@ WINDOW_SECONDS = _SLICE_MS * _SLICES_PER_WINDOW / 1000
 # file; the search covers that much either way.
 _MAX_OFFSET_SLICES = 250  # 5s
 _ALIGNMENT_SLICES = 3000  # first 60s is plenty to lock the offset
-# The music-to-recording gain is the ratio seen when nobody is singing. Not
-# knowing when that is, take a low percentile over windows where the music
-# is clearly playing: this assumes at least that share of them (intro,
-# breaks, breaths between lines) has no voice on it. Vocals only ever add
-# power, so the low tail is where the music-alone ratio lives.
-_GAIN_PERCENTILE = 0.05
+# The music-to-recording gain is the ratio seen when nobody is singing. On
+# real hardware that ratio wobbles about +-1.5dB from window to window, but
+# it clusters tightly around the true gain, and singing only ever moves
+# ratios above it. So the gain is the lowest substantial peak of the ratio
+# histogram: the cluster itself, not a low percentile (which sat below the
+# cluster and read normal wobble as singing -- a song with nobody singing
+# scored 99), and not the tallest peak (which is the singing, for someone
+# singing most of the song).
+_MODE_BIN_DB = 0.5
+_MIN_PEAK_SHARE = 0.2
 # The gain is re-estimated per block from the windows around it rather than
-# once per song: a hand on the mixer's music fader changes it mid-song.
+# once per song: a hand on the mixer's music fader, or a volume step when the
+# browser starts playing, changes it mid-song.
 _GAIN_BLOCK_WINDOWS = 25  # 2.5s
 _GAIN_CONTEXT_WINDOWS = 75  # 7.5s either side
 _MIN_GAIN_SAMPLES = 20
 _MUSIC_PRESENT_FRACTION = 0.01  # 20dB under the song's median level
-# A window counts as sung when it is this much louder than music plus room
-# noise alone would make it. Music alone stays within about 0.7dB of that in
-# testing; 2dB credits a voice mixed a little under the music.
-_ACTIVE_MARGIN_DB = 2.0
+# A window counts as sung when it is this far above what music plus room
+# noise alone would make it: at least _MIN_MARGIN_DB, wider where the music
+# itself wobbles more. The wobble is measured from ratios below the mode,
+# which singing never reaches.
+_MIN_MARGIN_DB = 2.0
+_MARGIN_SPREADS = 2.0
 # Share of windows that earns full marks. Songs have intros, solos, and
 # breaths between lines, so nobody sings through every 100ms of a song.
 _FULL_CREDIT_FRACTION = 0.4
 _MIN_WINDOWS = 50
+# The start of each recording isn't scored. The splash screen's background
+# music is still fading out for several seconds after a song starts, and that
+# extra sound reads as singing; songs almost never have vocals this early.
+_SKIPPED_START_WINDOWS = 80  # 8s
+SKIPPED_START_SECONDS = _SKIPPED_START_WINDOWS * _SLICE_MS * _SLICES_PER_WINDOW / 1000
 
 
 def recording_powers(path: str) -> list[float] | None:
@@ -127,7 +139,7 @@ def analyze_performance(
     recording: list[float], references: dict[str, list[float]]
 ) -> tuple[str, int, list[bool]] | None:
     """Return the matched reference channel, the offset in ms, and per 100ms
-    window whether it was sung.
+    window from SKIPPED_START_SECONDS on, whether it was sung.
 
     None when there is nothing meaningful to measure. Public so the
     explain_score script can show where the score came from.
@@ -140,25 +152,30 @@ def analyze_performance(
     reference = _shift(references[channel], offset, len(recording))
     rec_windows = _to_windows(recording)
     ref_windows = _to_windows(reference)
-    if len(rec_windows) < _MIN_WINDOWS:
+    if len(rec_windows) < _SKIPPED_START_WINDOWS + _MIN_WINDOWS:
         return None
 
-    gains = _local_gains(rec_windows, ref_windows)
-    if gains is None:
+    model = _local_music_model(rec_windows, ref_windows)
+    if model is None:
         return None
     # Room noise and mic hiss: what's left of the quietest windows once the
     # music is taken out. Taken from the recording alone, a performance sung
     # nearly end to end would put vocals into the "noise" too.
-    residuals = [r - g * m for r, m, g in zip(rec_windows, ref_windows, gains)]
+    residuals = [r - g * m for r, m, (g, _) in zip(rec_windows, ref_windows, model)]
     noise_floor = max(_percentile(residuals, 0.05), 0.0)
 
-    margin = 10 ** (_ACTIVE_MARGIN_DB / 10)
-    sung = [r > margin * (g * m + noise_floor) for r, m, g in zip(rec_windows, ref_windows, gains)]
-    return channel, offset * _SLICE_MS, sung
+    sung = [
+        r > margin * (g * m + noise_floor)
+        for r, m, (g, margin) in zip(rec_windows, ref_windows, model)
+    ]
+    return channel, offset * _SLICE_MS, sung[_SKIPPED_START_WINDOWS:]
 
 
-def _local_gains(rec_windows: list[float], ref_windows: list[float]) -> list[float] | None:
-    """Return the music-to-recording gain in effect at each window.
+def _local_music_model(
+    rec_windows: list[float], ref_windows: list[float]
+) -> list[tuple[float, float]] | None:
+    """Return, per window, the music-to-recording gain in effect and the
+    factor above music-alone power that counts as singing.
 
     None when the reference never clearly plays, so there is no music to
     measure a gain against.
@@ -166,30 +183,58 @@ def _local_gains(rec_windows: list[float], ref_windows: list[float]) -> list[flo
     music_level = _percentile(ref_windows, 0.5)
     if music_level <= 0:
         return None
-    # Quiet passages count too: playback's loudnorm boosts them relative to
-    # the loud ones, so a gain learned only from loud passages reads every
-    # quiet one as a voice. Only near-silence is left out, where room noise
-    # rather than music sets the ratio.
+    # Quiet passages count too; only near-silence is left out, where room
+    # noise rather than music sets the ratio.
     music_present = music_level * _MUSIC_PRESENT_FRACTION
-    ratios = [r / m if m > music_present else None for r, m in zip(rec_windows, ref_windows)]
-    song_ratios = [x for x in ratios if x is not None]
-    if not song_ratios:
+    ratios_db = [
+        10 * math.log10(r / m) if m > music_present and r > 0 else None
+        for r, m in zip(rec_windows, ref_windows)
+    ]
+    song_ratios = [x for x in ratios_db if x is not None]
+    if len(song_ratios) < _MIN_GAIN_SAMPLES:
         return None
-    song_gain = _percentile(song_ratios, _GAIN_PERCENTILE)
+    song_model = _music_alone(song_ratios)
 
-    gains = []
+    model = []
     for block_start in range(0, len(rec_windows), _GAIN_BLOCK_WINDOWS):
-        context = ratios[
+        context = ratios_db[
             max(0, block_start - _GAIN_CONTEXT_WINDOWS) : block_start
             + _GAIN_BLOCK_WINDOWS
             + _GAIN_CONTEXT_WINDOWS
         ]
         nearby = [x for x in context if x is not None]
-        gain = (
-            _percentile(nearby, _GAIN_PERCENTILE) if len(nearby) >= _MIN_GAIN_SAMPLES else song_gain
-        )
-        gains += [gain] * _GAIN_BLOCK_WINDOWS
-    return gains[: len(rec_windows)]
+        block_model = _music_alone(nearby) if len(nearby) >= _MIN_GAIN_SAMPLES else song_model
+        model += [block_model] * _GAIN_BLOCK_WINDOWS
+    return model[: len(rec_windows)]
+
+
+def _music_alone(ratios_db: list[float]) -> tuple[float, float]:
+    """Gain and singing-threshold factor from a set of recording/song ratios in dB."""
+    bins: dict[int, int] = {}
+    for value in ratios_db:
+        key = round(value / _MODE_BIN_DB)
+        bins[key] = bins.get(key, 0) + 1
+    smoothed = {
+        k: sum(w * bins.get(k + d, 0) for d, w in ((-2, 1), (-1, 2), (0, 3), (1, 2), (2, 1)))
+        for k in range(min(bins) - 2, max(bins) + 3)
+    }
+    tallest = max(smoothed.values())
+    peak = min(
+        k
+        for k, height in smoothed.items()
+        if height >= _MIN_PEAK_SHARE * tallest
+        and height >= smoothed.get(k - 1, 0)
+        and height >= smoothed.get(k + 1, 0)
+    )
+    center = peak * _MODE_BIN_DB
+    near = [v for v in ratios_db if abs(v - center) <= 1.5 * _MODE_BIN_DB]
+    mode = sum(near) / len(near)
+
+    # Median deviation below the mode, scaled to a standard deviation.
+    below = sorted(mode - v for v in ratios_db if v < mode)
+    spread = below[len(below) // 2] / 0.674 if below else 0.0
+    margin_db = max(_MIN_MARGIN_DB, _MARGIN_SPREADS * spread)
+    return 10 ** (mode / 10), 10 ** (margin_db / 10)
 
 
 def _slice_powers(path: str, audio_filter: str, channels: int) -> list[list[float]] | None:

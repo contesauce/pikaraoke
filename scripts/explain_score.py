@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pikaraoke.lib.participation_scorer import (
+    SKIPPED_START_SECONDS,
     WINDOW_SECONDS,
     analyze_performance,
     recording_powers,
@@ -67,7 +68,12 @@ def sung_spans(sung: list[bool]) -> list[tuple[float, float]]:
         if is_sung and start is None:
             start = i
         elif not is_sung and start is not None:
-            spans.append((start * WINDOW_SECONDS, i * WINDOW_SECONDS))
+            spans.append(
+                (
+                    SKIPPED_START_SECONDS + start * WINDOW_SECONDS,
+                    SKIPPED_START_SECONDS + i * WINDOW_SECONDS,
+                )
+            )
             start = None
     return spans
 
